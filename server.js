@@ -1,3 +1,5 @@
+const crypto = require('crypto');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys' );
 const express = require('express');
 const bodyParser = require('body-parser');
