@@ -1,19 +1,17 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const express = require('express');
 const bodyParser = require('body-parser');
-const axios = require('axios');
+const QRCode = require('qrcode');
 const path = require('path');
 const pino = require('pino');
 
 const app = express();
 app.use(bodyParser.json());
+app.use(express.static('public'));
 
 let sock = null;
 let isConnected = false;
-
-// ============================================
-// INICIAR BOT
-// ============================================
+let lastQR = null;
 
 async function startBot() {
     console.log('🚀 Iniciando Baileys...');
@@ -24,26 +22,30 @@ async function startBot() {
         
         sock = makeWASocket({
             auth: state,
-            printQRInTerminal: true,
+            printQRInTerminal: false,
             browser: ['Ubuntu', 'Chrome', '120.0.0.0'],
             logger: pino({ level: 'silent' })
         });
 
         sock.ev.on('creds.update', saveCreds);
 
-        sock.ev.on('connection.update', (update) => {
+        sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect, qr } = update;
             
             if (qr) {
-                console.log('📱 QR Code gerado! Escaneie com WhatsApp');
+                console.log('📱 QR Code gerado!');
+                lastQR = qr;
+                const qrImage = await QRCode.toDataURL(qr);
+                console.log('✅ QR Code pronto para escanear');
             }
             
             if (connection === 'open') {
                 console.log('✅ WhatsApp conectado com sucesso!');
                 isConnected = true;
+                lastQR = null;
             } else if (connection === 'close') {
                 const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-                console.log('❌ Conexão fechada. Reconectando...', shouldReconnect);
+                console.log('❌ Conexão fechada');
                 if (shouldReconnect) {
                     setTimeout(() => startBot(), 3000);
                 }
@@ -51,83 +53,95 @@ async function startBot() {
         });
 
     } catch (error) {
-        console.error('❌ Erro ao iniciar Baileys:', error);
+        console.error('❌ Erro:', error.message);
         setTimeout(() => startBot(), 5000);
     }
 }
-
-// ============================================
-// ENDPOINTS DA API
-// ============================================
 
 app.post('/send-message', async (req, res) => {
     try {
         const { phone, message, nome } = req.body;
 
-        if (!phone || !message) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Phone e message são obrigatórios' 
-            });
-        }
-
         if (!isConnected) {
             return res.status(503).json({ 
                 success: false, 
-                error: 'WhatsApp não está conectado. Tente novamente em 30 segundos.' 
+                error: 'WhatsApp não conectado' 
             });
         }
 
-        const numeroLimpo = phone.replace(/\D/g, '');
-        const numeroFormatado = `55${numeroLimpo}@s.whatsapp.net`;
+        const numeroFormatado = `55${phone.replace(/\D/g, '')}@s.whatsapp.net`;
+        const msg = `Olá ${nome}! 👋\n\nSou assistente da Zona Oeste MCMV.\n\nRaquel vai entrar em contato em breve!\n\n💡 Use seu FGTS para dar entrada!\n\nAtenciosamente,\nEquipe Zona Oeste`;
 
-        const mensagemBemVindo = `Olá ${nome}! 👋\n\nSou um assistente automático da Zona Oeste MCMV.\n\nVi que você se interessou por nossos imóveis com entrada facilitada!\n\nEm breve, a Raquel (nossa consultora) vai entrar em contato para tirar suas dúvidas.\n\n💡 Dica: Você pode usar seu FGTS para dar entrada!\n\nAtenciosamente,\nEquipe Zona Oeste MCMV`;
+        await sock.sendMessage(numeroFormatado, { text: msg });
 
-        await sock.sendMessage(numeroFormatado, { text: mensagemBemVindo });
-
-        console.log(`✅ Mensagem enviada para ${phone}`);
-
-        res.json({ 
-            success: true, 
-            message: 'Mensagem enviada com sucesso!',
-            phone: phone,
-            nome: nome
-        });
+        res.json({ success: true, message: 'Enviado!' });
 
     } catch (error) {
-        console.error('❌ Erro ao enviar mensagem:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: error.message 
-        });
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
-app.get('/status', (req, res) => {
+app.get('/status', async (req, res) => {
+    let qrImage = null;
+    if (lastQR) {
+        qrImage = await QRCode.toDataURL(lastQR);
+    }
+    
     res.json({
         connected: isConnected,
         status: isConnected ? 'Conectado' : 'Desconectado',
+        qr: qrImage,
         timestamp: new Date().toISOString()
     });
 });
 
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', time: new Date().toISOString() });
+app.get('/', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Baileys WhatsApp</title>
+            <style>
+                body { font-family: Arial; text-align: center; padding: 50px; }
+                #qr { max-width: 300px; margin: 20px auto; }
+                .status { font-size: 20px; margin: 20px 0; }
+                .connected { color: green; }
+                .disconnected { color: red; }
+            </style>
+        </head>
+        <body>
+            <h1>🤖 Baileys WhatsApp</h1>
+            <div class="status" id="status">Carregando...</div>
+            <div id="qr"></div>
+            <script>
+                async function updateStatus() {
+                    const res = await fetch('/status');
+                    const data = await res.json();
+                    
+                    const status = document.getElementById('status');
+                    const qr = document.getElementById('qr');
+                    
+                    if (data.connected) {
+                        status.innerHTML = '<span class="connected">✅ Conectado!</span>';
+                        qr.innerHTML = '';
+                    } else {
+                        status.innerHTML = '<span class="disconnected">❌ Desconectado</span>';
+                        if (data.qr) {
+                            qr.innerHTML = '<img src="' + data.qr + '" alt="QR Code">';
+                        } else {
+                            qr.innerHTML = '<p>Aguardando QR Code...</p>';
+                        }
+                    }
+                }
+                
+                updateStatus();
+                setInterval(updateStatus, 3000);
+            </script>
+        </body>
+        </html>
+    `);
 });
-
-// ============================================
-// INICIAR SERVIDOR
-// ============================================
 
 const PORT = process.env.PORT || 3000;
-
-startBot().then(() => {
-    app.listen(PORT, () => {
-        console.log(`🌐 Servidor rodando na porta ${PORT}`);
-        console.log(`📱 Escaneie o QR Code acima com seu WhatsApp`);
-        console.log(`🔗 URL: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost:' + PORT}`);
-    });
-}).catch(err => {
-    console.error('❌ Erro ao iniciar bot:', err);
-    process.exit(1);
-});
+startBot();
+app.listen(PORT, () => console.log(`🌐 Servidor na porta ${PORT}`));
