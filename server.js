@@ -1,10 +1,9 @@
-const crypto = require('crypto');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys' );
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const path = require('path');
+const pino = require('pino');
 
 const app = express();
 app.use(bodyParser.json());
@@ -19,47 +18,48 @@ let isConnected = false;
 async function startBot() {
     console.log('🚀 Iniciando Baileys...');
     
-    const authPath = path.join('/tmp', 'auth_info_baileys');
-    const { state, saveCreds } = await useMultiFileAuthState(authPath);
-    
-    sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: true,
-        browser: ['Ubuntu', 'Chrome', '120.0.0.0'],
-        logger: require('pino')({ level: 'error' })
-    });
-
-    sock.ev.on('creds.update', saveCreds);
-
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
+    try {
+        const authPath = path.join('/tmp', 'auth_info_baileys');
+        const { state, saveCreds } = await useMultiFileAuthState(authPath);
         
-        if (qr) {
-            console.log('📱 QR Code gerado! Escaneie com WhatsApp');
-        }
-        
-        if (connection === 'open') {
-            console.log('✅ WhatsApp conectado com sucesso!');
-            isConnected = true;
-        } else if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('❌ Conexão fechada. Reconectando...', shouldReconnect);
-            if (shouldReconnect) {
-                setTimeout(() => startBot(), 3000);
+        sock = makeWASocket({
+            auth: state,
+            printQRInTerminal: true,
+            browser: ['Ubuntu', 'Chrome', '120.0.0.0'],
+            logger: pino({ level: 'silent' })
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+
+        sock.ev.on('connection.update', (update) => {
+            const { connection, lastDisconnect, qr } = update;
+            
+            if (qr) {
+                console.log('📱 QR Code gerado! Escaneie com WhatsApp');
             }
-        }
-    });
+            
+            if (connection === 'open') {
+                console.log('✅ WhatsApp conectado com sucesso!');
+                isConnected = true;
+            } else if (connection === 'close') {
+                const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+                console.log('❌ Conexão fechada. Reconectando...', shouldReconnect);
+                if (shouldReconnect) {
+                    setTimeout(() => startBot(), 3000);
+                }
+            }
+        });
 
-    sock.ev.on('messages.upsert', async (m) => {
-        console.log('📨 Mensagem recebida:', m);
-    });
+    } catch (error) {
+        console.error('❌ Erro ao iniciar Baileys:', error);
+        setTimeout(() => startBot(), 5000);
+    }
 }
 
 // ============================================
 // ENDPOINTS DA API
 // ============================================
 
-// Endpoint para enviar mensagem
 app.post('/send-message', async (req, res) => {
     try {
         const { phone, message, nome } = req.body;
@@ -78,22 +78,14 @@ app.post('/send-message', async (req, res) => {
             });
         }
 
-        // Formatar número para o padrão do WhatsApp
         const numeroLimpo = phone.replace(/\D/g, '');
         const numeroFormatado = `55${numeroLimpo}@s.whatsapp.net`;
 
-        // Mensagem de boas-vindas
         const mensagemBemVindo = `Olá ${nome}! 👋\n\nSou um assistente automático da Zona Oeste MCMV.\n\nVi que você se interessou por nossos imóveis com entrada facilitada!\n\nEm breve, a Raquel (nossa consultora) vai entrar em contato para tirar suas dúvidas.\n\n💡 Dica: Você pode usar seu FGTS para dar entrada!\n\nAtenciosamente,\nEquipe Zona Oeste MCMV`;
 
-        // Enviar mensagem
         await sock.sendMessage(numeroFormatado, { text: mensagemBemVindo });
 
         console.log(`✅ Mensagem enviada para ${phone}`);
-
-        // Notificar Raquel via Twilight (se configurado)
-        if (process.env.RAQUEL_TWILIGHT) {
-            notificarRaquel(nome, phone);
-        }
 
         res.json({ 
             success: true, 
@@ -111,7 +103,6 @@ app.post('/send-message', async (req, res) => {
     }
 });
 
-// Endpoint para verificar status
 app.get('/status', (req, res) => {
     res.json({
         connected: isConnected,
@@ -120,20 +111,9 @@ app.get('/status', (req, res) => {
     });
 });
 
-// Endpoint de health check
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', time: new Date().toISOString() });
 });
-
-// Notificar Raquel
-async function notificarRaquel(nome, telefone) {
-    try {
-        console.log(`📞 Notificação para Raquel: Novo lead ${nome} - ${telefone}`);
-        // Você pode integrar com Twilight aqui
-    } catch (error) {
-        console.error('Erro ao notificar Raquel:', error);
-    }
-}
 
 // ============================================
 // INICIAR SERVIDOR
